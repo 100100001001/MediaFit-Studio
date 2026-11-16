@@ -2,18 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from './components/Icon'
 import { UploadZone } from './components/UploadZone'
 import { EditorPanel } from './features/image/EditorPanel'
-import { context2d, loadAsset, releaseCanvas, withDecodedImage } from './features/image/file'
+import { loadAsset, releaseCanvas, withDecodedImage } from './features/image/file'
 import { fileSize, fitSize, outputSize, PREVIEW_EDGE } from './features/image/limits'
 import { encodeCanvas, renderImage } from './features/image/render'
 import { INITIAL_SETTINGS, type Format, type ImageAsset } from './features/image/types'
 import { assertFile, clipboardImage, isTextPasteTarget } from './features/image/input'
+import { ImagePreview, type PreviewPair } from './features/image/ImagePreview'
 
 interface ExportResult { url: string; name: string; bytes: number; width: number; height: number }
 
 export default function App() {
   const [asset, setAsset] = useState<ImageAsset | null>(null)
   const [settings, setSettings] = useState(INITIAL_SETTINGS)
-  const [compareBefore, setCompareBefore] = useState(false)
+  const [interactive, setInteractive] = useState(false)
+  const [previewPair, setPreviewPair] = useState<PreviewPair | null>(null)
   const [format, setFormat] = useState<Format>('png')
   const [quality, setQuality] = useState(90)
   const [name, setName] = useState('mediafit-image')
@@ -23,9 +25,8 @@ export default function App() {
   const [previewPending, setPreviewPending] = useState(false)
   const [result, setResult] = useState<ExportResult | null>(null)
   const [visible, setVisible] = useState(!document.hidden)
-  const previewCanvas = useRef<HTMLCanvasElement>(null)
   const previewWork = useRef<Promise<void>>(Promise.resolve())
-  const lastPreview = useRef<{ asset: ImageAsset; settings: typeof settings; compareBefore: boolean } | null>(null)
+  const pairRef = useRef<PreviewPair | null>(null)
   const generation = useRef(0)
   const locked = useRef(false)
   const mounted = useRef(true)
@@ -33,6 +34,10 @@ export default function App() {
   const closeButton = useRef<HTMLButtonElement>(null)
   const exportButton = useRef<HTMLButtonElement>(null)
   const size = asset ? outputSize(asset, settings) : null
+
+  useEffect(() => () => {
+    if (previewPair) { releaseCanvas(previewPair.before); releaseCanvas(previewPair.after) }
+  }, [previewPair])
 
   useEffect(() => {
     const handleVisibility = () => setVisible(!document.hidden)
@@ -72,7 +77,7 @@ export default function App() {
     const current = ++generation.current
     if (!asset || busy || !visible) return
     setPreviewError('')
-    if (lastPreview.current?.asset === asset && lastPreview.current.settings === settings && lastPreview.current.compareBefore === compareBefore) {
+    if (pairRef.current?.asset === asset && pairRef.current.settings === settings && pairRef.current.fast === interactive) {
       setPreviewPending(false)
       return
     }
@@ -83,26 +88,27 @@ export default function App() {
         const cancelled = () => generation.current !== current || document.hidden || !mounted.current
         if (cancelled()) return
         const canvas = document.createElement('canvas')
+        const before = document.createElement('canvas')
+        let published = false
         try {
           const output = outputSize(asset, settings)
           const small = fitSize(output.width, output.height, PREVIEW_EDGE)
-          const previewSettings = compareBefore ? { ...settings, sharpness: 0 } : settings
-          await renderImage(canvas, asset.preview, asset.width, asset.height, asset, previewSettings, small.width, small.height, cancelled)
-          if (cancelled() || !previewCanvas.current) return
-          const display = previewCanvas.current
-          display.width = canvas.width; display.height = canvas.height
-          context2d(display).drawImage(canvas, 0, 0)
-          lastPreview.current = { asset, settings, compareBefore }
+          await renderImage(canvas, asset.preview, asset.width, asset.height, asset, settings, small.width, small.height, cancelled, before, interactive)
+          if (cancelled()) return
+          const pair = { before, after: canvas, asset, settings, fast: interactive }
+          pairRef.current = pair
+          setPreviewPair(pair)
+          published = true
         } catch (cause) {
           if (!cancelled()) setPreviewError(message(cause))
         } finally {
-          releaseCanvas(canvas)
+          if (!published) { releaseCanvas(canvas); releaseCanvas(before) }
           if (!cancelled()) setPreviewPending(false)
         }
       })
-    }, 180)
+    }, interactive ? 0 : 180)
     return () => { clearTimeout(timer); generation.current++ }
-  }, [asset, settings, busy, visible, compareBefore])
+  }, [asset, settings, busy, visible, interactive])
 
   const openFile = useCallback(async (file: File) => {
     if (locked.current) return
@@ -117,11 +123,11 @@ export default function App() {
       const next = await loadAsset(file)
       if (!mounted.current) { releaseCanvas(next.preview); return }
       if (assetRef.current) releaseCanvas(assetRef.current.preview)
-      lastPreview.current = null
+      pairRef.current = null; setPreviewPair(null)
       assetRef.current = next
       setAsset(next)
       setSettings({ ...INITIAL_SETTINGS, directionColors: { ...next.edgeColors } })
-      setCompareBefore(false)
+      setInteractive(false)
       setName(file.name.replace(/\.[^.]+$/, '') + '-mediafit')
       setResult(null)
     } catch (cause) { if (mounted.current) setError(message(cause)) }
@@ -151,14 +157,13 @@ export default function App() {
     await previewWork.current
     if (assetRef.current) releaseCanvas(assetRef.current.preview)
     assetRef.current = null
-    lastPreview.current = null
-    setAsset(null); setResult(null); setError(''); setPreviewError(''); setPreviewPending(false); setCompareBefore(false)
-    if (previewCanvas.current) releaseCanvas(previewCanvas.current)
+    pairRef.current = null; setPreviewPair(null)
+    setAsset(null); setResult(null); setError(''); setPreviewError(''); setPreviewPending(false); setInteractive(false)
     locked.current = false; setBusy('')
   }
 
   async function prepareExport() {
-    if (!asset || !size || locked.current || document.hidden) return
+    if (!asset || !size || locked.current || document.hidden || interactive) return
     locked.current = true
     generation.current++
     setBusy('저장 결과를 만들고 있습니다…')
@@ -191,13 +196,14 @@ export default function App() {
       <div className="workspace-heading"><div><span className="eyebrow accent">YOUR PERSONAL CANVAS</span><h1>이미지 스튜디오<span>작은 편집, 새로운 분위기.</span></h1></div><span className="phase-tag">이미지 편집 · Phase 1</span></div>
       <div className="editor-layout">
         <EditorPanel settings={settings} setSettings={setSettings} disabled={disabled || !asset} edgeColor={asset?.edgeColor}
-          edgeColors={asset?.edgeColors} colorSamplingFailed={asset?.colorSamplingFailed} compareBefore={compareBefore} onCompare={() => setCompareBefore((previous) => !previous)} />
+          edgeColors={asset?.edgeColors} colorSamplingFailed={asset?.colorSamplingFailed} onInteractive={setInteractive} />
         <section className="preview-panel" aria-label="이미지 미리보기">
           <div className="preview-toolbar"><span><Icon name="image" size={17} /> 미리보기</span><span className="preview-scale">축소 보기 · 최대 960px</span></div>
           <div className={`preview-stage ${asset ? 'has-image' : ''}`}>
             {asset ? <>
-              <canvas ref={previewCanvas} aria-label="편집 결과 축소 미리보기" className={previewError ? 'preview-failed' : ''} />
-              <span className="canvas-label">{compareBefore ? '보정 전 · 비교용' : settings.originalSize ? '원본 해상도' : settings.preset === 'custom' ? '사용자 지정' : PRESET_LABELS[settings.preset]}<span> {size?.width} × {size?.height}</span></span>
+              <ImagePreview pair={previewPair} asset={asset} settings={settings} setSettings={setSettings}
+                disabled={disabled || !visible} pending={previewPending} error={previewError} onInteractive={setInteractive} />
+              <span className="canvas-label">{settings.originalSize ? '원본 해상도' : settings.preset === 'custom' ? '사용자 지정' : PRESET_LABELS[settings.preset]}<span> {size?.width} × {size?.height}</span></span>
               {(previewPending || !visible || previewError) && <div className="preview-status" role="status">{previewError || (!visible ? '탭이 비활성화되어 미리보기를 멈췄습니다.' : '미리보기 업데이트 중…')}</div>}
             </> : <UploadZone disabled={disabled} onFile={openFile} onError={setError} />}
           </div>
@@ -209,14 +215,14 @@ export default function App() {
       </div>
 
       <section className="export-panel" aria-label="출력 설정">
-        <div className="export-title"><span className="section-number">04</span><div><h2>내보내기</h2><span>나만의 화면으로 저장하세요</span></div></div>
+        <div className="export-title"><span className="section-number">05</span><div><h2>내보내기</h2><span>나만의 화면으로 저장하세요</span></div></div>
         <fieldset disabled={disabled || !asset} className="export-fields">
           <label className="filename-field">파일 이름<input type="text" value={name} maxLength={120} onChange={(event) => setName(event.target.value)} /></label>
           <label>형식<select value={format} onChange={(event) => setFormat(event.target.value as Format)}><option value="png">PNG</option><option value="jpeg">JPG</option><option value="webp">WebP</option></select></label>
           {format !== 'png' && <label className="quality-field">품질 <span>{quality}%</span><input type="range" min="40" max="100" step="5" value={quality} onChange={(event) => setQuality(Number(event.target.value))} /></label>}
         </fieldset>
         <div className="output-size"><span>출력 해상도</span><strong>{size ? `${size.width} × ${size.height}` : '— × —'}<small> px</small></strong><span>{size ? `${(size.width * size.height / 1_000_000).toFixed(2)}MP` : '최대 3MP'} · 고품질 보간</span></div>
-        <div className="save-area"><button ref={exportButton} className="button primary save-button" disabled={disabled || !asset || !visible} onClick={prepareExport}><Icon name="download" size={19} />{busy ? '처리 중…' : '저장 결과 확인'}</button><span>결과를 확인한 뒤 다운로드</span></div>
+        <div className="save-area"><button ref={exportButton} className="button primary save-button" disabled={disabled || !asset || !visible || interactive} onClick={prepareExport}><Icon name="download" size={19} />{busy ? '처리 중…' : '저장 결과 확인'}</button><span>결과를 확인한 뒤 다운로드</span></div>
       </section>
       {size?.limited && <p className="notice">안정적인 처리를 위해 요청한 해상도를 {size.width} × {size.height}px로 줄였습니다. 원본 해상도 유지 옵션에도 3MP · 긴 변 2560px 제한이 적용됩니다.</p>}
       {error && <div className="error-message" role="alert"><span>{error}</span><button className="icon-button" aria-label="오류 메시지 닫기" onClick={() => setError('')}><Icon name="close" size={16} /></button></div>}

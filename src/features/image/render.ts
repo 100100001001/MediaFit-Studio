@@ -1,7 +1,8 @@
 import { context2d, releaseCanvas } from './file'
 import { fitSize } from './limits'
 import type { EditSettings, ImageAsset, Format } from './types'
-import { fillDirectional, type ImageRect } from './background'
+import { fillTransformedDirectional } from './background'
+import { imageTransform, type ImageTransform } from './transform'
 
 function placement(sw: number, sh: number, width: number, height: number, cover: boolean, x = 50, y = 50) {
   const scale = cover ? Math.max(width / sw, height / sh) : Math.min(width / sw, height / sh)
@@ -9,10 +10,11 @@ function placement(sw: number, sh: number, width: number, height: number, cover:
   return { x: (width - w) * x / 100, y: (height - h) * y / 100, w, h }
 }
 
-async function sharpen(canvas: HTMLCanvasElement, amount: number, rect: ImageRect, cancelled: () => boolean) {
+async function sharpen(canvas: HTMLCanvasElement, amount: number, transform: ImageTransform, cancelled: () => boolean) {
   if (cancelled()) throw new Error('작업이 중단되었습니다.')
   const ctx = context2d(canvas, true)
   // 이미지와 여백의 경계는 처리하지 않고 보이는 이미지 내부만 읽는다.
+  const rect = transform.bounds
   const left = Math.max(0, Math.ceil(rect.x))
   const top = Math.max(0, Math.ceil(rect.y))
   const width = Math.min(canvas.width, Math.floor(rect.x + rect.w)) - left
@@ -26,6 +28,8 @@ async function sharpen(canvas: HTMLCanvasElement, amount: number, rect: ImageRec
   const maxChange = amount / 100 * 6
   // sRGB 코드값의 근사 밝기. 별도 밝기 버퍼나 선형 색공간 변환은 만들지 않는다.
   const luma = (i: number) => (54 * input[i] + 183 * input[i + 1] + 19 * input[i + 2]) / 256
+  const insetU = 2 / (transform.scale * transform.sw)
+  const insetV = 2 / (transform.scale * transform.sh)
   // 밝기 하나로 계산한 정수 변화량을 RGB에 공통 적용해 채널별 색 테두리를 줄인다.
   for (let y = 1; y < height - 1; y++) {
     if (y % 64 === 0) {
@@ -33,7 +37,11 @@ async function sharpen(canvas: HTMLCanvasElement, amount: number, rect: ImageRec
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
       if (cancelled()) throw new Error('작업이 중단되었습니다.')
     }
-    for (let x = 1; x < width - 1; x++) {
+    const start = transform.point(left + 1.5, top + y + 0.5)
+    let u = start.u; let v = start.v
+    for (let x = 1; x < width - 1; x++, u += transform.inverse.a, v += transform.inverse.b) {
+      // 회전한 이미지 밖의 배경과 이미지 경계는 샤프닝하지 않는다.
+      if (u <= insetU || u >= 1 - insetU || v <= insetV || v >= 1 - insetV) continue
       const i = (y * width + x) * 4
       const center = luma(i)
       const a = luma(i - 4); const b = luma(i + 4)
@@ -56,17 +64,18 @@ export async function renderImage(
   sourceWidth: number, sourceHeight: number, asset: ImageAsset,
   settings: EditSettings, width: number, height: number,
   cancelled: () => boolean,
+  before?: HTMLCanvasElement,
+  fast = false,
 ) {
   canvas.width = width; canvas.height = height
-  const ctx = context2d(canvas, settings.sharpness > 0)
+  const ctx = context2d(canvas, !fast && settings.sharpness > 0)
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
   ctx.fillStyle = settings.background === 'color' ? settings.color : asset.edgeColor
   ctx.fillRect(0, 0, width, height)
-  const crop = settings.background === 'crop'
-  const p = placement(sourceWidth, sourceHeight, width, height, crop, crop ? settings.positionX : 50, crop ? settings.positionY : 50)
+  const transform = imageTransform(sourceWidth, sourceHeight, width, height, settings)
   if (settings.background === 'directional-auto' || settings.background === 'directional-color') {
-    fillDirectional(ctx, { ...p, x: Math.max(0, p.x), y: Math.max(0, p.y) }, width, height, asset,
+    fillTransformedDirectional(ctx, transform, width, height, asset,
       settings.background === 'directional-auto' ? asset.edgeColors : settings.directionColors,
       settings.connection === 'gradient')
   }
@@ -86,8 +95,15 @@ export async function renderImage(
       ctx.drawImage(blur, 0, 0, width, height)
     } finally { releaseCanvas(blur) }
   }
-  ctx.drawImage(source, p.x, p.y, p.w, p.h)
-  if (settings.sharpness > 0) await sharpen(canvas, settings.sharpness, p, cancelled)
+  ctx.save()
+  ctx.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f)
+  ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight)
+  ctx.restore()
+  if (before) {
+    before.width = width; before.height = height
+    context2d(before).drawImage(canvas, 0, 0)
+  }
+  if (!fast && settings.sharpness > 0) await sharpen(canvas, settings.sharpness, transform, cancelled)
   if (cancelled()) throw new Error('작업이 중단되었습니다. 다시 요청해 주세요.')
 }
 

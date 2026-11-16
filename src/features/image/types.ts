@@ -5,6 +5,7 @@ export type RGB = [number, number, number]
 export type EdgeSamples = Record<Direction, RGB[]>
 export type Preset = 'original' | 'square' | 'portrait' | 'landscape' | 'classic' | 'vertical' | 'custom'
 export type Format = 'png' | 'jpeg' | 'webp'
+export type Placement = 'fit' | 'fill' | 'custom'
 
 export interface ImageAsset {
   file: File
@@ -29,14 +30,30 @@ export interface EditSettings {
   positionY: number
   sharpness: number
   originalSize: boolean
+  placement: Placement
+  customBase: 'fit' | 'fill'
+  zoom: number
+  offsetX: number
+  offsetY: number
+  rotation: number
+  fineRotation: number
+  flipX: boolean
+  flipY: boolean
+}
+
+export const INITIAL_TRANSFORM = {
+  placement: 'fit' as Placement, customBase: 'fit' as const,
+  zoom: 1, offsetX: 0, offsetY: 0, rotation: 0, fineRotation: 0,
+  flipX: false, flipY: false, positionX: 50, positionY: 50,
 }
 
 export const INITIAL_SETTINGS: EditSettings = {
   preset: 'portrait', customWidth: 1080, customHeight: 1920,
-  background: 'auto', color: '#252b38', positionX: 50, positionY: 50,
+  background: 'auto', color: '#252b38',
   directionColors: { top: '#252b38', bottom: '#252b38', left: '#252b38', right: '#252b38' },
   connection: 'solid',
   sharpness: 0, originalSize: false,
+  ...INITIAL_TRANSFORM,
 }
 
 export const PRESETS: { id: Preset; label: string; width: number; height: number }[] = [

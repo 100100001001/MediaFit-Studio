@@ -1,5 +1,6 @@
 import { rgb } from './edges'
 import type { Direction, EdgeColors, ImageAsset, RGB } from './types'
+import type { ImageTransform } from './transform'
 
 export interface ImageRect { x: number; y: number; w: number; h: number }
 const GRID = 32
@@ -70,4 +71,58 @@ export function fillDirectional(
     }
     corner('left', 'top'); corner('right', 'top'); corner('left', 'bottom'); corner('right', 'bottom')
   } finally { patch.width = 1; patch.height = 1 }
+}
+
+/** 이동/회전/반전 시 역변환 좌표로 배경을 채운다. 최대 64² 샘플, 고해상도 픽셀 분석 없음. */
+export function fillTransformedDirectional(
+  ctx: CanvasRenderingContext2D, transform: ImageTransform, width: number, height: number,
+  asset: ImageAsset, colors: EdgeColors, gradient: boolean,
+) {
+  const rect = transform.bounds
+  if (Math.abs(transform.b) < 1e-8 && Math.abs(transform.c) < 1e-8 && transform.a > 0 && transform.d > 0
+    && rect.x >= -1e-6 && rect.y >= -1e-6 && rect.x + rect.w <= width + 1e-6 && rect.y + rect.h <= height + 1e-6) {
+    fillDirectional(ctx, { ...rect, x: Math.max(0, rect.x), y: Math.max(0, rect.y) }, width, height, asset, colors, gradient)
+    return
+  }
+  const field = document.createElement('canvas')
+  try {
+    field.width = 64; field.height = 64
+    const small = field.getContext('2d')
+    if (!small) throw new Error('방향별 배경을 그릴 수 없습니다. 단일 색상을 선택해 주세요.')
+    const pixels = small.createImageData(64, 64)
+    const targets = Object.fromEntries(Object.entries(colors).map(([key, value]) => [key, rgb(value)])) as Record<Direction, RGB>
+    const fallback = rgb(asset.edgeColor)
+    const corners = [transform.point(0, 0), transform.point(width, 0), transform.point(0, height), transform.point(width, height)]
+    const margins = {
+      left: Math.max(0.001, -Math.min(...corners.map((p) => p.u))),
+      right: Math.max(0.001, Math.max(...corners.map((p) => p.u)) - 1),
+      top: Math.max(0.001, -Math.min(...corners.map((p) => p.v))),
+      bottom: Math.max(0.001, Math.max(...corners.map((p) => p.v)) - 1),
+    }
+    const colorAt = (direction: Direction, along: number, distance: number) => {
+      if (!gradient) return targets[direction]
+      const strip = asset.edgeSamples[direction]
+      const at = Math.max(0, Math.min(1, along)) * (strip.length - 1)
+      const boundary = mix(strip[Math.floor(at)], strip[Math.ceil(at)], at % 1)
+      return mix(boundary, targets[direction], smooth(Math.min(1, distance / margins[direction])))
+    }
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const { u, v } = transform.point(x / 63 * width, y / 63 * height)
+      const dx = u < 0 ? -u : u > 1 ? u - 1 : 0
+      const dy = v < 0 ? -v : v > 1 ? v - 1 : 0
+      const horizontal = u < 0 ? 'left' : 'right'
+      const vertical = v < 0 ? 'top' : 'bottom'
+      let value = fallback
+      if (dx > 0 && dy > 0) {
+        const wx = dx / margins[horizontal]; const wy = dy / margins[vertical]
+        value = mix(colorAt(horizontal, v, dx), colorAt(vertical, u, dy), wy / (wx + wy))
+      } else if (dx > 0) value = colorAt(horizontal, v, dx)
+      else if (dy > 0) value = colorAt(vertical, u, dy)
+      const i = (y * 64 + x) * 4
+      for (let c = 0; c < 3; c++) pixels.data[i + c] = value[c]
+      pixels.data[i + 3] = 255
+    }
+    small.putImageData(pixels, 0, 0)
+    ctx.drawImage(field, 0, 0, width, height)
+  } finally { field.width = 1; field.height = 1 }
 }

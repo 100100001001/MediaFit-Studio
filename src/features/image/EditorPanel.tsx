@@ -1,10 +1,11 @@
 import { useEffect, useId, useState, type Dispatch, type SetStateAction } from 'react'
 import { PRESETS, type EditSettings, type Background, type EdgeColors } from './types'
 import { DIRECTIONS } from './edges'
+import { TransformPanel } from './TransformPanel'
 
-export function EditorPanel({ settings, setSettings, disabled, edgeColor, edgeColors, colorSamplingFailed, compareBefore, onCompare }: {
+export function EditorPanel({ settings, setSettings, disabled, edgeColor, edgeColors, colorSamplingFailed, onInteractive }: {
   settings: EditSettings; setSettings: Dispatch<SetStateAction<EditSettings>>; disabled: boolean; edgeColor?: string
-  edgeColors?: EdgeColors; colorSamplingFailed?: boolean; compareBefore: boolean; onCompare: () => void
+  edgeColors?: EdgeColors; colorSamplingFailed?: boolean; onInteractive: (value: boolean) => void
 }) {
   const update = <K extends keyof EditSettings>(key: K, value: EditSettings[K]) => setSettings((previous) => ({ ...previous, [key]: value }))
   const backgrounds: { id: Background; label: string; glyph: string }[] = [
@@ -28,9 +29,13 @@ export function EditorPanel({ settings, setSettings, disabled, edgeColor, edgeCo
           <span>×</span><label>높이 (px)<input type="number" min="1" max="9999" value={settings.customHeight} onChange={(event) => update('customHeight', Math.max(1, Math.min(9999, Math.round(Number(event.target.value) || 1))))} /></label>
         </div>}
       </section>
+      <TransformPanel settings={settings} setSettings={setSettings} onInteractive={onInteractive} />
       <section className="control-section">
-        <h2><span className="section-number">02</span> 배경 채우기</h2>
-        <div className="background-grid">{backgrounds.map((item) => <button key={item.id} className={`background-option ${settings.background === item.id ? 'selected' : ''}`} aria-pressed={settings.background === item.id} onClick={() => update('background', item.id)}><span>{item.glyph}</span>{item.label}</button>)}</div>
+        <h2><span className="section-number">03</span> 배경 채우기</h2>
+        <div className="background-grid">{backgrounds.map((item) => <button key={item.id} className={`background-option ${settings.background === item.id ? 'selected' : ''}`} aria-pressed={settings.background === item.id} onClick={() => {
+          if (item.id === 'crop') setSettings((previous) => ({ ...previous, background: 'crop', placement: 'fill', zoom: 1, offsetX: 0, offsetY: 0, positionX: 50, positionY: 50 }))
+          else update('background', item.id)
+        }}><span>{item.glyph}</span>{item.label}</button>)}</div>
         {settings.background === 'auto' && <div className="color-info"><span className="color-swatch" style={{ backgroundColor: edgeColor ?? '#252b38' }} /><span>가장자리에서 추출한 색상</span><code>{edgeColor ?? '—'}</code></div>}
         {settings.background === 'color' && <div className="color-fields"><input aria-label="배경 컬러 피커" type="color" value={settings.color} onChange={(event) => update('color', event.target.value)} /><HexColorInput color={settings.color} onColor={(value) => update('color', value)} /></div>}
         {settings.background === 'directional-auto' && <div className="direction-swatches">{DIRECTIONS.map(({ id, label }) => <div key={id}><span className="color-swatch" style={{ backgroundColor: edgeColors?.[id] ?? '#252b38' }} /><span>{label}</span><code>{edgeColors?.[id] ?? '—'}</code></div>)}</div>}
@@ -48,17 +53,12 @@ export function EditorPanel({ settings, setSettings, disabled, edgeColor, edgeCo
         </div>}
         {colorSamplingFailed && <p className="helper" role="status">가장자리 색상을 읽지 못해 안전한 기본 색상을 사용합니다. 직접 지정할 수 있습니다.</p>}
         {settings.background === 'blur' && <p className="helper">축소한 배경에만 블러를 적용해 처리량을 줄입니다.</p>}
-        {settings.background === 'crop' && <div className="position-controls">
-          <label>가로 위치 <span>{settings.positionX}%</span><input type="range" min="0" max="100" value={settings.positionX} onChange={(event) => update('positionX', Number(event.target.value))} /></label>
-          <label>세로 위치 <span>{settings.positionY}%</span><input type="range" min="0" max="100" value={settings.positionY} onChange={(event) => update('positionY', Number(event.target.value))} /></label>
-          <button className="text-button" onClick={() => setSettings((previous) => ({ ...previous, positionX: 50, positionY: 50 }))}>가운데로 맞추기</button>
-        </div>}
+        {settings.background === 'crop' && <p className="helper">크롭은 Fill 배치를 사용합니다. 드래그하면 Custom으로 전환하며 위의 이동 슬라이더로도 위치를 조절할 수 있습니다.</p>}
       </section>
       <section className="control-section">
-        <h2><span className="section-number">03</span> 이미지 개선 <span className="small-badge">기본</span></h2>
+        <h2><span className="section-number">04</span> 이미지 개선 <span className="small-badge">기본</span></h2>
         <label className="range-label">선명도 <span>{settings.sharpness}%</span><input type="range" min="0" max="100" step="5" value={settings.sharpness} onChange={(event) => update('sharpness', Number(event.target.value))} /></label>
-        <button className="button secondary compare-button" aria-pressed={compareBefore} onClick={onCompare}>{compareBefore ? '개선 결과 보기' : '보정 전과 비교하기'}</button>
-        <p className="helper">{compareBefore ? '비교 중: 같은 크기·배경에서 선명도 0으로 표시합니다. 저장에는 설정한 선명도를 적용합니다.' : '비교는 축소 미리보기만 전환합니다. 색상·밝기·채도는 보정하지 않습니다.'}</p>
+        <p className="helper">미리보기를 움직이지 않고 0.45초 누르거나 ‘원본 비교’를 누르고 있으면 화질 효과만 끕니다. 떼면 개선 결과로 돌아옵니다. 비교는 저장 설정을 바꾸지 않습니다.</p>
         <label className="checkbox-label"><input type="checkbox" checked={settings.originalSize} onChange={(event) => update('originalSize', event.target.checked)} /> 원본 해상도 유지 <span>안전 한도 내</span></label>
         <p className="helper">고품질 보간과 가벼운 선명도 조정입니다.<br />AI 업스케일링이나 실제 디테일 복원이 아닙니다.</p>
       </section>
