@@ -1,7 +1,10 @@
 name: Deploy MediaFit Studio to GitHub Pages
 
-# Manual only: committing or pushing this file does not publish the site.
+# Deploy main pushes automatically; manual dispatch remains available.
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
